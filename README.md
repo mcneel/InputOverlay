@@ -8,9 +8,10 @@ The overlay is only visible while **Rhino is the frontmost application**, and it
 the whole Rhino UI — viewports, toolbars, panels, and dialogs — because it is a separate
 top-level window rather than a viewport display conduit.
 
-The Windows app is the current, maintained implementation. A native macOS port is **planned**
-(see below). Both share the same visual design: a light `#eee`/`#333` modifier badge followed by
-a mouse glyph with the pressed button highlighted blue.
+Native Windows and macOS implementations are both available. They share the same visual design:
+a translucent white modifier badge next to a capsule mouse glyph whose pressed half is highlighted.
+Windows shows modifiers as `Ctrl`/`Alt`/`Shift`; macOS uses the native `⌃` `⌥` `⇧` `⌘` symbols
+(and includes Cmd). Both expose a Settings window for colours, sizes and placement.
 
 ## Windows (`windows/`)
 
@@ -28,15 +29,36 @@ dotnet build windows -c Release
 
 A tray icon appears; right-click → **Exit** to quit.
 
-## macOS — planned
+## macOS (`mac/`)
 
-A native macOS port (Swift + AppKit) is planned but not yet available in this repository.
-The intended approach: a borderless floating `NSWindow` with `ignoresMouseEvents` (click-through),
-global input polled from `NSEvent.modifierFlags` / `NSEvent.pressedMouseButtons` (snapshot class
-properties — no Accessibility permission needed), and the active app checked via
-`NSWorkspace.frontmostApplication`. Contributions welcome.
+Native Swift + AppKit app (single file, `mac/main.swift`). A borderless, click-through, top-most
+`NSWindow` drawn with Core Graphics. Global input is read from snapshot APIs
+(`NSEvent.pressedMouseButtons` / `NSEvent.modifierFlags`) plus a global `.scrollWheel` monitor for
+the wheel; the active app is checked via `NSWorkspace.frontmostApplication` (process name `Rhino`).
+No Accessibility permission required. Runs as an accessory (no Dock icon) with a menu bar item for
+Settings / Start / Stop / Quit. Point-based and Retina-correct (no DPI scaling needed).
+
+```
+cd mac
+swiftc -O -o RhinoInputOverlay main.swift -framework Cocoa
+./RhinoInputOverlay
+```
+
+Or build a proper `.app` bundle — so it launches without a Terminal window, carries the icon, and
+can be zipped for distribution:
+
+```
+cd mac
+./make-app.sh && open RhinoInputOverlay.app   # universal (arm64 + x86_64) .app + .icns
+./package.sh                                   # → RhinoInputOverlay.zip
+```
+
+The `.app`/`.zip` are universal but only ad-hoc signed (not notarized): on first launch from a
+download, right-click → **Open** (or System Settings → Privacy & Security → **Open Anyway**).
 
 ## Tuning
 
-The Windows app exposes tunables near the top of the source (`OffsetX/Y`, glyph size,
-badge padding, colors). Edit and rebuild.
+Both apps have a **Settings** window (the five colours, mouse/text size, and signed X/Y distance
+from the cursor) that applies live. Settings persist per-user:
+`%AppData%\RhinoInputOverlay\settings.json` on Windows,
+`~/Library/Application Support/RhinoInputOverlay/settings.json` on macOS.
