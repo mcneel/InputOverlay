@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>RhinoInputOverlay-Setup</AssemblyName>
+    <RollForward>LatestMajor</RollForward>
+    <ApplicationIcon>..\icon.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <!-- Both architecture builds are embedded; the installer extracts whichever matches the OS. -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\dist\framework-dependent\RhinoInputOverlay.exe">
+      <LogicalName>payload-x64</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="..\dist\framework-dependent-arm64\RhinoInputOverlay.exe">
+      <LogicalName>payload-arm64</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,28 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+dist/
+*.user
+
+# Packaged / distributable artifacts
+*.zip
+*.dmg
+*.app/
+
+# .NET
+*.dll
+*.pdb
+*.exe
+*.deps.json
+*.runtimeconfig.json
+
+# macOS build product
+mac/RhinoInputOverlay
+mac/*.icns
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.swp
+.DS_Store
