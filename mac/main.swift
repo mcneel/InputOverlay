@@ -56,10 +56,15 @@ final class OverlaySettings {
 
   let shadowColor = RGBA(r: 0, g: 0, b: 0, a: 55)            // not user-editable
 
-  var mouseSize = 42   // mouse-glyph height (points), range 16…120
-  var textSize  = 13   // modifier-text size (points), range 8…48
-  var offsetX   = -20  // horizontal placement vs. cursor: +right / -left
-  var offsetY   = 20   // vertical placement vs. cursor:   +down / -up
+  var mouseSize = 42      // mouse-glyph height (points), range 16…120
+  var textSize  = 13      // modifier-text size (points), range 8…48
+  var offsetX   = -20     // horizontal placement vs. cursor: +right / -left
+  var offsetY   = 20      // vertical placement vs. cursor:   +down / -up
+  var scalePercent = 100  // global size multiplier in 25% steps (100–300); scales the whole
+                          // overlay (glyph, text, distances, borders) uniformly.
+
+  // Global scale folded into every drawn dimension (the macOS analogue of the Windows DPI scale).
+  var scale: CGFloat { CGFloat(scalePercent) / 100 }
 
   // Mouse glyph keeps its 26:42 aspect; only the size knob (height) varies.
   var mouseWidth: CGFloat  { CGFloat(mouseSize) * (26.0 / 42.0) }
@@ -76,6 +81,7 @@ final class OverlaySettings {
     textSize = d.textSize
     offsetX = d.offsetX
     offsetY = d.offsetY
+    scalePercent = d.scalePercent
   }
 
   // ---- Persistence (~/Library/Application Support/RhinoInputOverlay/settings.json) ----------
@@ -89,6 +95,7 @@ final class OverlaySettings {
     var textSize: Int
     var offsetX: Int
     var offsetY: Int
+    var scalePercent: Int?   // optional: older settings files predate this field
   }
 
   static var fileURL: URL {
@@ -100,7 +107,8 @@ final class OverlaySettings {
   func save() {
     let d = Data(textBackground: textBackground, mouseBackground: mouseBackground,
                  buttonColor: buttonColor, borderColor: borderColor, textColor: textColor,
-                 mouseSize: mouseSize, textSize: textSize, offsetX: offsetX, offsetY: offsetY)
+                 mouseSize: mouseSize, textSize: textSize, offsetX: offsetX, offsetY: offsetY,
+                 scalePercent: scalePercent)
     do {
       let url = OverlaySettings.fileURL
       try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
@@ -124,6 +132,9 @@ final class OverlaySettings {
     s.textSize = clampInt(d.textSize, 8, 48)
     s.offsetX = clampInt(d.offsetX, -50, 50)
     s.offsetY = clampInt(d.offsetY, -50, 50)
+    // Snap to the nearest 25% step; clamp to 100–300. Missing field (older files) → 100%.
+    let sp = d.scalePercent ?? 0
+    s.scalePercent = sp < 100 ? 100 : clampInt((sp + 12) / 25 * 25, 100, 300)
     return s
   }
 }
@@ -141,11 +152,12 @@ final class OverlayView: NSView {
   var scrollDir = 0
   var scrollUntil = Date.distantPast
 
-  // Layout constants (points). No DPI scaling on macOS.
-  private let gap: CGFloat = 8
-  private let padX: CGFloat = 9
-  private let padY: CGFloat = 5
-  private let edgePad: CGFloat = 4
+  // Layout constants, multiplied by the global user scale so the whole overlay grows uniformly.
+  private var scale: CGFloat { settings.scale }
+  private var gap: CGFloat { 8 * scale }
+  private var padX: CGFloat { 9 * scale }
+  private var padY: CGFloat { 5 * scale }
+  private var edgePad: CGFloat { 4 * scale }
 
   init(settings: OverlaySettings) {
     self.settings = settings
@@ -159,7 +171,7 @@ final class OverlayView: NSView {
 
   // Modifier symbols render 20% larger than the configured text size, with letter spacing so the
   // ⌃⌥⇧⌘ glyphs don't crowd each other.
-  private var font: NSFont { NSFont.systemFont(ofSize: CGFloat(settings.textSize) * 1.2) }
+  private var font: NSFont { NSFont.systemFont(ofSize: CGFloat(settings.textSize) * 1.2 * scale) }
   private var kern: CGFloat { font.pointSize * 0.38 }
 
   private func textAttributes() -> [NSAttributedString.Key: Any] {
@@ -176,8 +188,8 @@ final class OverlayView: NSView {
 
   // Exact content size so the window is sized to fit (mirrors Render() measuring first).
   func contentSize() -> NSSize {
-    let glyphW = settings.mouseWidth
-    let glyphH = settings.mouseHeight
+    let glyphW = settings.mouseWidth * scale
+    let glyphH = settings.mouseHeight * scale
 
     var badgeW: CGFloat = 0, badgeH: CGFloat = 0
     if !mods.isEmpty {
@@ -192,31 +204,33 @@ final class OverlayView: NSView {
   }
 
   override func draw(_ dirtyRect: NSRect) {
-    let glyphW = settings.mouseWidth
-    let glyphH = settings.mouseHeight
+    let glyphW = settings.mouseWidth * scale
+    let glyphH = settings.mouseHeight * scale
     let centerY = bounds.height / 2
-    var x: CGFloat = 2
 
-    // Modifier badge first (left), then the mouse glyph to its right. The window's right edge is
-    // anchored near the cursor (see the controller), so the glyph holds position while the text
-    // grows leftward instead of shoving the glyph around as the modifier string changes.
+    // Anchor the glyph to the view's right edge and lay the badge out to its left. The window's
+    // right edge is pinned near the cursor, so anchoring the glyph from the right keeps it exactly
+    // put — independent of the badge width and content-size rounding — while the text grows
+    // leftward. (Accumulating from the left instead let ~1px of rounding drift move the glyph.)
+    let glyphLeft = bounds.width - 2 * scale - glyphW
+
     if !mods.isEmpty {
       let ts = textMeasure()
       let badgeW = ts.width + 2 * padX
       let badgeH = ts.height + 2 * padY
-      let rect = NSRect(x: x, y: centerY - badgeH / 2, width: badgeW, height: badgeH)
-      let path = NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6)
+      let badgeX = glyphLeft - gap - badgeW
+      let rect = NSRect(x: badgeX, y: centerY - badgeH / 2, width: badgeW, height: badgeH)
+      let path = NSBezierPath(roundedRect: rect, xRadius: 6 * scale, yRadius: 6 * scale)
       settings.textBackground.color.setFill()
       path.fill()
       settings.borderColor.color.setStroke()
-      path.lineWidth = 1
+      path.lineWidth = 1 * scale
       path.stroke()
-      (mods as NSString).draw(at: NSPoint(x: x + padX, y: centerY - ts.height / 2),
+      (mods as NSString).draw(at: NSPoint(x: badgeX + padX, y: centerY - ts.height / 2),
                               withAttributes: textAttributes())
-      x += badgeW + gap
     }
 
-    drawMouseGlyph(left: x, centerY: centerY, w: glyphW, h: glyphH)
+    drawMouseGlyph(left: glyphLeft, centerY: centerY, w: glyphW, h: glyphH)
   }
 
   private func drawMouseGlyph(left: CGFloat, centerY: CGFloat, w: CGFloat, h: CGFloat) {
@@ -228,7 +242,7 @@ final class OverlayView: NSView {
     let bodyPath = NSBezierPath(roundedRect: bodyRect, xRadius: radius, yRadius: radius)
 
     // Soft drop shadow (offset ~1 pt down), then the body fill.
-    let shadowPath = NSBezierPath(roundedRect: NSRect(x: left, y: top + 1, width: w, height: h),
+    let shadowPath = NSBezierPath(roundedRect: NSRect(x: left, y: top + 1 * scale, width: w, height: h),
                                   xRadius: radius, yRadius: radius)
     settings.shadowColor.color.setFill()
     shadowPath.fill()
@@ -250,25 +264,25 @@ final class OverlayView: NSView {
     }
 
     // Small vertical pill for the scroll wheel near the top centre (base 4.5 × 9 pt).
-    let ww: CGFloat = 4.5, wh: CGFloat = 9
-    let wheel = NSRect(x: cx - ww / 2, y: top + 6, width: ww, height: wh)
+    let ww: CGFloat = 4.5 * scale, wh: CGFloat = 9 * scale
+    let wheel = NSRect(x: cx - ww / 2, y: top + 6 * scale, width: ww, height: wh)
     let wheelPath = NSBezierPath(roundedRect: wheel, xRadius: ww / 2, yRadius: ww / 2)
     (button == .middle ? settings.buttonColor.color : settings.mouseBackground.color).setFill()
     wheelPath.fill()
     settings.borderColor.color.setStroke()
-    wheelPath.lineWidth = 1.4
+    wheelPath.lineWidth = 1.4 * scale
     wheelPath.stroke()
 
     // Body outline on top.
     settings.borderColor.color.setStroke()
-    bodyPath.lineWidth = 1.4
+    bodyPath.lineWidth = 1.4 * scale
     bodyPath.stroke()
 
     // Scroll flash: a filled dot whose diameter is the pill width + 1 pt, centred on the rounded
     // cap at the top (scrolling up) or bottom (scrolling down). Relit briefly by each wheel notch.
     if scrollDir != 0 && Date() < scrollUntil {
       let r = ww / 2                 // pill radius (cap-centre reference)
-      let dr = r + 0.5               // dot radius: 1 pt larger diameter than the pill
+      let dr = r + 0.5 * scale       // dot radius: 1 pt larger diameter than the pill
       let cyDot = scrollDir > 0 ? wheel.minY + r : wheel.maxY - r
       let dot = NSRect(x: cx - dr, y: cyDot - dr, width: dr * 2, height: dr * 2)
       settings.buttonColor.color.setFill()
@@ -335,19 +349,20 @@ final class StepperBinding: NSObject {
   let get: () -> Int
   let set: (Int) -> Void
 
-  init(min: Int, max: Int, get: @escaping () -> Int, set: @escaping (Int) -> Void) {
+  init(min: Int, max: Int, step: Int = 1, get: @escaping () -> Int, set: @escaping (Int) -> Void) {
     self.get = get
     self.set = set
     super.init()
     stepper.minValue = Double(min)
     stepper.maxValue = Double(max)
-    stepper.increment = 1
+    stepper.increment = Double(step)
     stepper.valueWraps = false
     stepper.integerValue = get()
     stepper.target = self
     stepper.action = #selector(changed)
+    stepper.controlSize = .small
     label.alignment = .right
-    label.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+    label.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
     refresh()
   }
 
@@ -382,12 +397,18 @@ final class SettingsWindowController: NSObject {
 
     window.title = "Rhino Input Overlay"
     window.isReleasedWhenClosed = false      // closing just hides it; reopen via the menu bar
+    // Hide the (disabled) minimise/zoom traffic-light buttons — the window is fixed-size.
+    window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+    window.standardWindowButton(.zoomButton)?.isHidden = true
     NSColorPanel.shared.showsAlpha = false   // the picker chooses RGB only
 
     let grid = NSGridView()
     grid.translatesAutoresizingMaskIntoConstraints = false
     grid.rowSpacing = 8
     grid.columnSpacing = 12
+    // Centre each row's contents vertically. The default is baseline alignment, which has no
+    // baseline to match in the colour-well rows and so misaligns the label against the pill.
+    grid.rowAlignment = .none
 
     // Restore defaults (top).
     let restore = NSButton(title: "Restore defaults", target: self, action: #selector(restoreDefaults))
@@ -407,6 +428,7 @@ final class SettingsWindowController: NSObject {
     addStepperRow(grid, "Text size",       min: 8,   max: 48,  get: { self.settings.textSize },  set: { self.settings.textSize = $0 })
     addStepperRow(grid, "Distance X",      min: -50, max: 50,  get: { self.settings.offsetX },   set: { self.settings.offsetX = $0 })
     addStepperRow(grid, "Distance Y",      min: -50, max: 50,  get: { self.settings.offsetY },   set: { self.settings.offsetY = $0 })
+    addStepperRow(grid, "Scale %",         min: 100, max: 300, step: 25, get: { self.settings.scalePercent }, set: { self.settings.scalePercent = $0 })
 
     // Start / Stop.
     let startBtn = NSButton(title: "Start", target: self, action: #selector(startClicked))
@@ -419,6 +441,7 @@ final class SettingsWindowController: NSObject {
     buttonRow.topPadding = 8
 
     if grid.numberOfColumns > 0 { grid.column(at: 0).xPlacement = .trailing }
+    for r in 0..<grid.numberOfRows { grid.row(at: r).yPlacement = .center }
 
     let content = NSView()
     content.addSubview(grid)
@@ -445,9 +468,9 @@ final class SettingsWindowController: NSObject {
     grid.addRow(with: [NSTextField(labelWithString: label), binding.well])
   }
 
-  private func addStepperRow(_ grid: NSGridView, _ label: String, min: Int, max: Int,
+  private func addStepperRow(_ grid: NSGridView, _ label: String, min: Int, max: Int, step: Int = 1,
                              get: @escaping () -> Int, set: @escaping (Int) -> Void) {
-    let binding = StepperBinding(min: min, max: max, get: get, set: set)
+    let binding = StepperBinding(min: min, max: max, step: step, get: get, set: set)
     steppers.append(binding)
     binding.label.translatesAutoresizingMaskIntoConstraints = false
     binding.label.widthAnchor.constraint(equalToConstant: 36).isActive = true
@@ -569,8 +592,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Anchor the window's right edge at cursor.x + OffsetX (so the glyph holds position and the
     // text grows leftward); place its top OffsetY below the cursor. OffsetX/Y are signed points:
     // +right/-left, +down/-up. Screen origin is bottom-left, so "below" subtracts from y.
-    let origin = NSPoint(x: loc.x + CGFloat(settings.offsetX) - size.width,
-                         y: loc.y - CGFloat(settings.offsetY) - size.height)
+    let origin = NSPoint(x: loc.x + CGFloat(settings.offsetX) * settings.scale - size.width,
+                         y: loc.y - CGFloat(settings.offsetY) * settings.scale - size.height)
     overlayWindow.setFrame(NSRect(origin: origin, size: size), display: false)
     overlayView.frame = NSRect(origin: .zero, size: size)
 
