@@ -58,6 +58,8 @@ namespace RhinoInputOverlay
     public int TextSize  = 13;   // modifier-text height, base (100%) px
     public int OffsetX   = -20;  // horizontal placement vs. cursor: +right / -left
     public int OffsetY   = 20;   // vertical placement vs. cursor:   +down / -up
+    public int ScalePercent = 100; // global size multiplier in 25% steps (100-300); scales the
+                                   // whole overlay (glyph, text, distances, borders) uniformly.
 
     // Mouse glyph keeps its original 26:42 aspect; only the size knob varies.
     public float MouseWidth  => MouseSize * (26f / 42f);
@@ -80,6 +82,7 @@ namespace RhinoInputOverlay
       public int TextSize { get; set; }
       public int OffsetX { get; set; }
       public int OffsetY { get; set; }
+      public int ScalePercent { get; set; }
     }
 
     public void Save()
@@ -97,6 +100,7 @@ namespace RhinoInputOverlay
           TextSize = TextSize,
           OffsetX = OffsetX,
           OffsetY = OffsetY,
+          ScalePercent = ScalePercent,
         };
         Directory.CreateDirectory(Path.GetDirectoryName(FilePath));
         File.WriteAllText(FilePath, JsonSerializer.Serialize(d, new JsonSerializerOptions { WriteIndented = true }));
@@ -123,6 +127,8 @@ namespace RhinoInputOverlay
             s.TextSize = Math.Clamp(d.TextSize, 8, 48);
             s.OffsetX = Math.Clamp(d.OffsetX, -50, 50);
             s.OffsetY = Math.Clamp(d.OffsetY, -50, 50);
+            // Snap to the nearest 25% step; clamp to 100-300. Older files (no field) read as 0 → 100%.
+            s.ScalePercent = d.ScalePercent < 100 ? 100 : Math.Clamp((d.ScalePercent + 12) / 25 * 25, 100, 300);
           }
         }
       }
@@ -151,7 +157,15 @@ namespace RhinoInputOverlay
       Icon appIcon = null;
       try { appIcon = Icon.ExtractAssociatedIcon(Environment.ProcessPath); } catch { }
 
-      var menu = new ContextMenuStrip();
+      // Tray icon + menu — the Windows equivalent of the macOS menu-bar item: Settings / Start /
+      // Stop / Exit. The settings window can be closed (it just hides); the tray menu is the
+      // persistent control surface, so the app keeps running until Exit.
+      var menu = new ContextMenuStrip { ShowImageMargin = false }; // no icons → drop the left gutter
+      menu.Items.Add("Settings…", null, (s, e) => ShowSettings());
+      menu.Items.Add(new ToolStripSeparator());
+      menu.Items.Add("Start", null, (s, e) => Start());
+      menu.Items.Add("Stop", null, (s, e) => Stop());
+      menu.Items.Add(new ToolStripSeparator());
       menu.Items.Add("Exit", null, (s, e) => ExitThread());
       m_tray = new NotifyIcon
       {
@@ -160,6 +174,7 @@ namespace RhinoInputOverlay
         Visible = true,
         ContextMenuStrip = menu
       };
+      m_tray.DoubleClick += (s, e) => ShowSettings(); // double-click opens settings, as is conventional
 
       // Force the window handle so we can marshal the quit signal onto the UI thread.
       _ = m_overlay.Handle;
@@ -174,10 +189,28 @@ namespace RhinoInputOverlay
       m_timer.Tick += (s, e) => m_overlay.UpdateOverlay();
 
       m_form = new SettingsForm(m_settings, Start, Stop);
-      m_form.FormClosed += (s, e) => ExitThread(); // closing the dialog stops & exits
+      // Closing the window (X / Alt+F4) just hides it — reopen from the tray. The app quits only
+      // via the tray's Exit item. (Windows shutdown and other non-user closes are allowed through.)
+      m_form.FormClosing += (s, e) =>
+      {
+        if (e.CloseReason == CloseReason.UserClosing)
+        {
+          e.Cancel = true;
+          m_form.Hide();
+        }
+      };
       m_form.Show();
 
       Start(); // auto-start on launch
+    }
+
+    // Show (or restore + focus) the settings window.
+    void ShowSettings()
+    {
+      m_form.Show();
+      if (m_form.WindowState == FormWindowState.Minimized)
+        m_form.WindowState = FormWindowState.Normal;
+      m_form.Activate();
     }
 
     void Start()
@@ -260,6 +293,7 @@ namespace RhinoInputOverlay
       AddIntRow(t, "Text size",        8,  48, () => m_s.TextSize,  v => m_s.TextSize = v);
       AddIntRow(t, "Distance X",     -50,  50, () => m_s.OffsetX,   v => m_s.OffsetX = v);
       AddIntRow(t, "Distance Y",     -50,  50, () => m_s.OffsetY,   v => m_s.OffsetY = v);
+      AddIntRow(t, "Scale %",        100, 300, () => m_s.ScalePercent, v => m_s.ScalePercent = v, step: 25);
 
       var startBtn = new Button { Text = "Start", AutoSize = true, Margin = new Padding(3, 3, 6, 3) };
       var stopBtn  = new Button { Text = "Stop",  AutoSize = true };
@@ -310,9 +344,9 @@ namespace RhinoInputOverlay
       AddRow(t, label, btn);
     }
 
-    void AddIntRow(TableLayoutPanel t, string label, int min, int max, Func<int> get, Action<int> set)
+    void AddIntRow(TableLayoutPanel t, string label, int min, int max, Func<int> get, Action<int> set, int step = 1)
     {
-      var nud = new NumericUpDown { Minimum = min, Maximum = max, Value = get(), Width = 90 };
+      var nud = new NumericUpDown { Minimum = min, Maximum = max, Increment = step, Value = get(), Width = 90 };
       nud.ValueChanged += (s, e) => set((int)nud.Value);
       m_refresh.Add(() => nud.Value = get());
       AddRow(t, label, nud);
@@ -331,6 +365,7 @@ namespace RhinoInputOverlay
       m_s.TextSize = d.TextSize;
       m_s.OffsetX = d.OffsetX;
       m_s.OffsetY = d.OffsetY;
+      m_s.ScalePercent = d.ScalePercent;
       foreach (var r in m_refresh)
         r();
       m_s.Save();
@@ -403,6 +438,9 @@ namespace RhinoInputOverlay
       string mods = ModifierText();
       float scale = GetDpiForWindow(Handle) / 96f;
       if (scale <= 0f) scale = 1f;
+      // Fold the global user scale into the master scale so the whole overlay — glyph, text,
+      // distances and border thicknesses — grows/shrinks uniformly.
+      scale *= m_settings.ScalePercent / 100f;
 
       // Render to a 32bpp ARGB bitmap, then push it to the layered window.
       using (var bmp = Render(mods, btn, scale, out Size contentSize))

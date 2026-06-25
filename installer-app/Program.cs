@@ -62,7 +62,7 @@ namespace RhinoInputOverlaySetup
   static class Core
   {
     public const string AppName = "Rhino Input Overlay";
-    public const string AppVersion = "1.0.0";
+    public const string AppVersion = "1.1.0";
     public const string Publisher = "McNeel";
     const string ExeName = "RhinoInputOverlay.exe";
     const string UninstallerName = "uninstall.exe";
